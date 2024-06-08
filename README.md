@@ -17,7 +17,7 @@ Python - pandas
 
 ## Running the analysis
 1. Clone the repository:
-git clone https://github.com/your-username/poll_prediction.git
+git clone https://github.com/karimtoufiq13/poll_prediction.git
 
 2. Open the R Markdown file poll_prediction.Rmd in RStudio.
 3. Ensure you have all the required packages installed (see Prerequisites).
