@@ -1,0 +1,421 @@
+---
+title: "poll_prediction"
+author: "Karim Toufiq"
+date: "2024-06-08"
+output: html_document
+---
+
+
+```{r setup, include=TRUE}
+# BOOTSTRAP EXAMPLE
+# Load necessary library
+library(boot)
+
+# Assume 'data' is your data vector containing numeric values
+# For example, let's create some sample data
+set.seed(123) # For reproducibility
+data <- rnorm(100, mean = 50, sd = 10) # 100 random normal numbers with mean 50 and sd 10
+
+# Define a function to obtain the mean of a sample
+mean_function <- function(data, indices) {
+  # The 'indices' parameter allows the boot function to select bootstrap samples
+  return(mean(data[indices]))
+}
+
+# Perform the bootstrap
+set.seed(123) # For reproducibility
+bootstrap_results <- boot(data = data, statistic = mean_function, R = 1000)
+
+# Calculate the 95% confidence interval
+bootstrap_ci <- boot.ci(bootstrap_results, type = "perc")
+
+# Print the bootstrap estimate and confidence interval
+print(bootstrap_results$t0)
+print(bootstrap_ci)
+```
+
+Notes for Bootstrapping Polling Data
+Following: 
+https://towardsdatascience.com/bootstrapping-method-to-estimate-voters-preferences-in-us-presidential-election-2020-d480ef13aef
+
+```{python, include=FALSE}
+# IMPORT PACKAGES FOR PYTHON
+import pandas as pd
+#LOAD DATA
+polling = pd.read_csv("https://raw.githubusercontent.com/PriyaBrataSen/US-Election-Poll/main/pres_polls.csv")
+```
+
+```{r, include=TRUE}
+library(reticulate)
+library(dplyr)
+library(boot)
+
+# Store Python Object as a R Object
+df <- as.data.frame(py$polling) # Saves Python Object as R
+
+# Extract unique pollster names from the 'Pollster' column of the dataframe 'df'
+poll = unique(pull(df, Pollster))
+
+# Display the structure of the 'poll' object to understand its contents and type
+str(poll)
+
+# Define a function 'bootmean' to calculate the mean of a subset of data
+bootmean = function(x, i) { mean(x[i]) }
+
+# Define a function 'prefer_country' to perform bootstrap analysis on a given dataset
+prefer_country = function(data) {
+  # Perform bootstrap resampling 10,000 times using the 'bootmean' function
+  boot.object = boot(data, bootmean, R = 10000)
+
+  # Calculate the 95% confidence interval using bias-corrected accelerated (BCa) method
+  boot.ci(boot.object, conf = 0.95, type = 'bca')
+}
+
+# Calculate the confidence interval for the 'Dem' variable and round to 4 decimal places
+Dem = round(prefer_country(df$Dem)$bca[, c(4, 5)], 4)
+
+# Calculate the confidence interval for the 'GOP' variable and round to 4 decimal places
+GOP = round(prefer_country(df$GOP)$bca[, c(4, 5)], 4)
+
+# Create a vector with the Democratic party's confidence interval
+c('Democratic party:', Dem)
+
+# Create a vector with the Republican party's confidence interval
+c('Republican party:', GOP)
+
+# Initialize empty vectors for storing lower and upper confidence limits and region names
+lower = c()
+upper = c()
+region = c()
+
+# Extract unique region names from the 'Region' column of the dataframe 'df'
+a = unique(pull(df, Region))
+
+# Define a function 'prefer_region' to perform region-based bootstrap analysis
+prefer_region = function(data) {
+  for (i in a) {
+    # Subset data for each region
+    data_Dem = data[df$Region == i]
+
+    # Perform bootstrap analysis on the subset data
+    boot.Dem = boot(data_Dem, bootmean, R = 10000)
+
+    # Calculate the 95% confidence interval for the subset data
+    p = boot.ci(boot.Dem, conf = 0.95)
+
+    # Store the lower and upper bounds and region names in their respective vectors
+    lower = c(lower, p$bca[, c(4)])
+    upper = c(upper, p$bca[, c(5)])
+    region = c(region, i)
+  }
+
+  # Combine the region, lower, and upper bounds into a dataframe
+  preference = data.frame(region, lower, upper)
+  preference
+}
+
+# Calculate the confidence intervals for each region for the Democratic party
+DEM = prefer_region(df$Dem) %>% rename(Dem_lower = lower, Dem_upper = upper)
+
+# Calculate the confidence intervals for each region for the Republican party
+GOP = prefer_region(df$GOP) %>% rename(GOP_lower = lower, GOP_upper = upper)
+
+# Merge the Democratic and Republican party dataframes by region
+inner_join(DEM, GOP, by = 'region')
+```
+
+```{r, include=TRUE}
+# Define the regression function for bootstrapping
+regression_function <- function(data, indices) {
+  # Sample the data
+  d <- data[indices, ]  # Bootstrap sample
+  
+  # Fit the model
+  fit <- lm(Dem ~ Day + as.factor(Region), data = d)
+  
+  # Return the coefficients of the model
+  # If the model fails for a sample, return a vector of NAs
+  if (length(coef(fit)) == length(coefficients(lm(Dem ~ Day + as.factor(Region), data = data)))) {
+    return(coef(fit))
+  } else {
+    return(rep(NA, length(coefficients(lm(Dem ~ Day + as.factor(Region), data = data)))))
+  }
+}
+
+# Assuming 'df' is your dataframe and it's already been loaded into your R environment.
+# Perform the bootstrap
+set.seed(123) # For reproducibility
+boot_results_Dem <- boot(data = df, statistic = regression_function, R = 1000)
+
+# Summarize the bootstrap results
+print(boot_results_Dem)
+
+# Obtain bootstrap confidence intervals for the first coefficient (intercept) as an example
+boot_ci_Dem <- boot.ci(boot_results_Dem, type = "perc", index = 1)
+print(boot_ci_Dem)
+```
+
+# Make a Forecast on that Bootstrap
+
+```{r, include=TRUE}
+# Fit the linear regression model to the existing data
+fit <- lm(Dem ~ Day + as.factor(Region), data = df)
+
+# Make sure 'Region' in 'df' is a factor
+df$Region <- as.factor(df$Region)
+
+# Create new data frame for future days
+max_day <- max(df$Day)
+future_days <- data.frame(Day = seq(from = max_day + 1, by = 1, length.out = 100))
+
+# Assign the first level of 'Region' from 'df' to 'future_days'
+# Make sure that the 'Region' variable has levels
+if(length(levels(df$Region)) > 0) {
+  future_days$Region <- rep(levels(df$Region)[1], times = 100)
+} else {
+  stop("No levels found in df$Region. Ensure it is a factor with levels.")
+}
+
+# Predict future 'Dem' values
+future_predictions <- predict(fit, newdata = future_days)
+
+# Add the predictions as a new column in 'future_days'
+future_days$Dem <- future_predictions
+
+# Prepare 'df' and 'future_days' for binding by selecting matching columns
+df <- df[, c("Day", "Dem")]
+future_days <- future_days[, c("Day", "Dem")]
+
+# Combine historical and forecasted data
+combined_data <- rbind(df, future_days)
+
+# Calculate base standard error from the model
+se_fit <- sqrt(sum(residuals(fit)^2) / fit$df.residual)
+
+# Add a time distance measure to future_days (distance from the last observed day)
+future_days$time_distance <- seq_along(future_days$Day)
+
+# Modify the scaling factor for the standard error to reduce the spread
+# For example, using a smaller exponent or a constant less than 1
+scaling_factor <- 0.025  # Adjust this value as needed
+future_days$se <- se_fit * (sqrt(future_days$time_distance) * scaling_factor)
+
+# Calculate upper and lower bounds for confidence intervals
+future_days$upper <- future_days$Dem + 1.96 * future_days$se
+future_days$lower <- future_days$Dem - 1.96 * future_days$se
+library(ggplot2)
+# Plot
+ggplot() +
+  geom_line(data = df, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.5) +
+  geom_point(data = df, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.1) +
+  geom_line(data = future_days, aes(x = Day, y = Dem), color = "#08306b", linetype = "dashed") +
+  geom_ribbon(data = future_days, aes(x = Day, ymin = lower, ymax = upper), 
+              fill = "#3f8fc4", alpha = 0.2) +
+  theme_minimal() +
+  labs(title = "Democrat Support Over Time with Forecast",
+       x = "Day",
+       y = "Democrat Support")
+
+```
+
+From: https://slate.com/news-and-politics/2018/03/how-much-do-democrats-need-to-win-by.html
+
+"It took a 5.4-percentage-point lead in the national congressional vote for Democrats to gain the 31 seats they won in the last Democratic wave in 2006. Republicans held over 55 percent of the seats in the House after 2016’s elections despite winning only 49.9 percent of the popular vote."
+
+```{r setup, include=TRUE, warning=FALSE}
+# Filter out the initial volatile values, for example, the first 10 days
+df_filtered <- df %>% filter(Day > 10)
+
+# Define a y-axis range that excludes extreme values, for example from 30 to 70
+y_axis_range <- c(30, 70)
+
+# Plot with the filtered data and adjusted y-axis range
+library(ggplot2)
+
+ggplot() +
+  geom_line(data = combined_data, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.5) +
+  geom_point(data = df_filtered, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.1) +
+  geom_line(data = future_days, aes(x = Day, y = Dem), color = "#08306b", linetype = "dashed") +
+  geom_ribbon(data = future_days, aes(x = Day, ymin = lower, ymax = upper), 
+              fill = "#08306b", alpha = 0.2) +
+  geom_hline(yintercept = 55.4, color = "black", linetype = "solid", size = 0.5) +
+  theme_minimal() +
+  labs(title = "Democrat Support Over Time with Forecast",
+       x = "Day",
+       y = "Democrat Support") +
+  scale_y_continuous(limits = y_axis_range)  # Set y-axis limits
+```
+
+# PREDITION BASED ON 356 DAYS
+
+```{r setup, include=TRUE, warning=FALSE}
+# RESTART 
+
+# Store Python Object as a R Object
+df <- as.data.frame(py$polling) # Saves Python Object as R
+
+# Extract unique pollster names from the 'Pollster' column of the dataframe 'df'
+poll = unique(pull(df, Pollster))
+
+# Display the structure of the 'poll' object to understand its contents and type
+str(poll)
+
+# Define a function 'bootmean' to calculate the mean of a subset of data
+bootmean = function(x, i) { mean(x[i]) }
+
+# Define a function 'prefer_country' to perform bootstrap analysis on a given dataset
+prefer_country = function(data) {
+  # Perform bootstrap resampling 10,000 times using the 'bootmean' function
+  boot.object = boot(data, bootmean, R = 10000)
+
+  # Calculate the 95% confidence interval using bias-corrected accelerated (BCa) method
+  boot.ci(boot.object, conf = 0.95, type = 'bca')
+}
+
+# Calculate the confidence interval for the 'Dem' variable and round to 4 decimal places
+Dem = round(prefer_country(df$Dem)$bca[, c(4, 5)], 4)
+
+# Calculate the confidence interval for the 'GOP' variable and round to 4 decimal places
+GOP = round(prefer_country(df$GOP)$bca[, c(4, 5)], 4)
+
+# Create a vector with the Democratic party's confidence interval
+c('Democratic party:', Dem)
+
+# Create a vector with the Republican party's confidence interval
+c('Republican party:', GOP)
+
+# Initialize empty vectors for storing lower and upper confidence limits and region names
+lower = c()
+upper = c()
+region = c()
+
+# Extract unique region names from the 'Region' column of the dataframe 'df'
+a = unique(pull(df, Region))
+
+# Define a function 'prefer_region' to perform region-based bootstrap analysis
+prefer_region = function(data) {
+  for (i in a) {
+    # Subset data for each region
+    data_Dem = data[df$Region == i]
+
+    # Perform bootstrap analysis on the subset data
+    boot.Dem = boot(data_Dem, bootmean, R = 10000)
+
+    # Calculate the 95% confidence interval for the subset data
+    p = boot.ci(boot.Dem, conf = 0.95)
+
+    # Store the lower and upper bounds and region names in their respective vectors
+    lower = c(lower, p$bca[, c(4)])
+    upper = c(upper, p$bca[, c(5)])
+    region = c(region, i)
+  }
+
+  # Combine the region, lower, and upper bounds into a dataframe
+  preference = data.frame(region, lower, upper)
+  preference
+}
+
+# Calculate the confidence intervals for each region for the Democratic party
+DEM = prefer_region(df$Dem) %>% rename(Dem_lower = lower, Dem_upper = upper)
+
+# Calculate the confidence intervals for each region for the Republican party
+GOP = prefer_region(df$GOP) %>% rename(GOP_lower = lower, GOP_upper = upper)
+
+# Merge the Democratic and Republican party dataframes by region
+inner_join(DEM, GOP, by = 'region')
+
+# Define the regression function for bootstrapping
+regression_function <- function(data, indices) {
+  # Sample the data
+  d <- data[indices, ]  # Bootstrap sample
+  
+  # Fit the model
+  fit <- lm(Dem ~ Day + as.factor(Region), data = d)
+  
+  # Return the coefficients of the model
+  # If the model fails for a sample, return a vector of NAs
+  if (length(coef(fit)) == length(coefficients(lm(Dem ~ Day + as.factor(Region), data = data)))) {
+    return(coef(fit))
+  } else {
+    return(rep(NA, length(coefficients(lm(Dem ~ Day + as.factor(Region), data = data)))))
+  }
+}
+
+# Assuming 'df' is your dataframe and it's already been loaded into your R environment.
+# Perform the bootstrap
+set.seed(123) # For reproducibility
+boot_results_Dem <- boot(data = df, statistic = regression_function, R = 1000)
+
+# Summarize the bootstrap results
+print(boot_results_Dem)
+
+# Obtain bootstrap confidence intervals for the first coefficient (intercept) as an example
+boot_ci_Dem <- boot.ci(boot_results_Dem, type = "perc", index = 1)
+print(boot_ci_Dem)
+
+fit <- lm(Dem ~ Day + as.factor(Region), data = df)
+
+# Make sure 'Region' in 'df' is a factor
+df$Region <- as.factor(df$Region)
+
+# Create new data frame for future days
+max_day <- max(df$Day)
+future_days <- data.frame(Day = seq(from = max_day + 1, by = 1, length.out = 356))
+
+# Assign the first level of 'Region' from 'df' to 'future_days'
+# Make sure that the 'Region' variable has levels
+if(length(levels(df$Region)) > 0) {
+  future_days$Region <- rep(levels(df$Region)[1], times = 356)
+} else {
+  stop("No levels found in df$Region. Ensure it is a factor with levels.")
+}
+
+# Predict future 'Dem' values
+future_predictions <- predict(fit, newdata = future_days)
+
+# Add the predictions as a new column in 'future_days'
+future_days$Dem <- future_predictions
+
+# Prepare 'df' and 'future_days' for binding by selecting matching columns
+df <- df[, c("Day", "Dem")]
+future_days <- future_days[, c("Day", "Dem")]
+
+# Combine historical and forecasted data
+combined_data <- rbind(df, future_days)
+
+# Calculate base standard error from the model
+se_fit <- sqrt(sum(residuals(fit)^2) / fit$df.residual)
+
+# Add a time distance measure to future_days (distance from the last observed day)
+future_days$time_distance <- seq_along(future_days$Day)
+
+# Modify the scaling factor for the standard error to reduce the spread
+# For example, using a smaller exponent or a constant less than 1
+scaling_factor <- 0.025  # Adjust this value as needed
+future_days$se <- se_fit * (sqrt(future_days$time_distance) * scaling_factor)
+
+# Calculate upper and lower bounds for confidence intervals
+future_days$upper <- future_days$Dem + 1.96 * future_days$se
+future_days$lower <- future_days$Dem - 1.96 * future_days$se
+
+# Filter out the initial volatile values, for example, the first 10 days
+df_filtered <- df %>% filter(Day > 10)
+
+# Define a y-axis range that excludes extreme values, for example from 30 to 70
+y_axis_range <- c(30, 70)
+
+# Plot with the filtered data and adjusted y-axis range
+ggplot() +
+  geom_line(data = combined_data, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.5) +
+  geom_point(data = df_filtered, aes(x = Day, y = Dem), color = "#3f8fc4", alpha = 0.1) +
+  geom_line(data = future_days, aes(x = Day, y = Dem), color = "#08306b", linetype = "dashed") +
+  geom_ribbon(data = future_days, aes(x = Day, ymin = lower, ymax = upper), 
+              fill = "#08306b", alpha = 0.2) +
+  geom_hline(yintercept = 55.4, color = "black", linetype = "solid", size = 0.5) +
+  theme_minimal() +
+  labs(title = "Democrat Support Over Time with Forecast",
+       x = "Day",
+       y = "Democrat Support") +
+  scale_y_continuous(limits = y_axis_range)  # Set y-axis limits
+```
+
